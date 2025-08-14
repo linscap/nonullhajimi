@@ -1,51 +1,45 @@
 /**
- * @fileoverview Vercel Function proxy for Gemini API with robust streaming retry and standardized error responses.
+ * @fileoverview Vercel Edge Function proxy for Gemini API with robust streaming retry and standardized error responses.
  * Handles model's "thought" process and can filter thoughts after retries to maintain a clean output stream.
- * @version 3.9.0
+ * @version 4.1.0 (Vercel Adapted, Robust Routing)
  * @license MIT
  */
 
+// VERCEL: 明确指定这是一个 Edge Function
+export const config = {
+  runtime: 'edge',
+};
+
+// VERCEL: 从 process.env 读取配置，并提供默认值
 const CONFIG = {
-  upstream_url_base: "https://generativelanguage.googleapis.com",
-  max_consecutive_retries: 100,
-  debug_mode: true,
-  retry_delay_ms: 750,
-  swallow_thoughts_after_retry: true,
+  upstream_url_base: process.env.UPSTREAM_URL_BASE || "https://generativelanguage.googleapis.com",
+  max_consecutive_retries: parseInt(process.env.MAX_CONSECUTIVE_RETRIES || "100", 10),
+  debug_mode: process.env.DEBUG_MODE === 'true',
+  retry_delay_ms: parseInt(process.env.RETRY_DELAY_MS || "750", 10),
+  swallow_thoughts_after_retry: process.env.SWALLOW_THOUGHTS_AFTER_RETRY !== 'false', // 默认为 true
 };
 
 const NON_RETRYABLE_STATUSES = new Set([400, 401, 403, 404, 429]);
+
+
 
 const logDebug = (...args) => { if (CONFIG.debug_mode) console.log(`[DEBUG ${new Date().toISOString()}]`, ...args); };
 const logInfo  = (...args) => console.log(`[INFO ${new Date().toISOString()}]`, ...args);
 const logError = (...args) => console.error(`[ERROR ${new Date().toISOString()}]`, ...args);
 
-const handleOPTIONS = () => {
-  return {
-    status: 200,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Goog-Api-Key",
-    }
-  };
-};
+const handleOPTIONS = () => new Response(null, {
+  headers: {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Goog-Api-Key",
+  },
+});
 
 const jsonError = (status, message, details = null) => {
-  return {
+  return new Response(JSON.stringify({ error: { code: status, message, status: statusToGoogleStatus(status), details } }), {
     status,
-    headers: { 
-      "Content-Type": "application/json; charset=utf-8", 
-      "Access-Control-Allow-Origin": "*" 
-    },
-    body: JSON.stringify({ 
-      error: { 
-        code: status, 
-        message, 
-        status: statusToGoogleStatus(status), 
-        details 
-      } 
-    })
-  };
+    headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
+  });
 };
 
 function statusToGoogleStatus(code) {
@@ -61,12 +55,8 @@ function statusToGoogleStatus(code) {
 }
 
 function buildUpstreamHeaders(reqHeaders) {
-  const h = {};
-  const copy = (k) => { 
-    const v = reqHeaders[k]; 
-    if (v) h[k] = v; 
-  };
-  
+  const h = new Headers();
+  const copy = (k) => { const v = reqHeaders.get(k); if (v) h.set(k, v); };
   copy("authorization");
   copy("x-goog-api-key");
   copy("content-type");
@@ -77,7 +67,7 @@ function buildUpstreamHeaders(reqHeaders) {
 async function standardizeInitialError(initialResponse) {
   let upstreamText = "";
   try {
-    upstreamText = await initialResponse.text();
+    upstreamText = await initialResponse.clone().text();
     logError(`Upstream error body (truncated): ${upstreamText.length > 2000 ? upstreamText.slice(0, 2000) + "..." : upstreamText}`);
   } catch (e) {
     logError(`Failed to read upstream error text: ${e.message}`);
@@ -108,26 +98,25 @@ async function standardizeInitialError(initialResponse) {
     };
   }
 
-  const safeHeaders = {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Goog-Api-Key"
-  };
-  
+  const safeHeaders = new Headers();
+  safeHeaders.set("Content-Type", "application/json; charset=utf-8");
+  safeHeaders.set("Access-Control-Allow-Origin", "*");
+  safeHeaders.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Goog-Api-Key");
   const retryAfter = initialResponse.headers.get("Retry-After");
-  if (retryAfter) safeHeaders["Retry-After"] = retryAfter;
+  if (retryAfter) safeHeaders.set("Retry-After", retryAfter);
 
-  return {
+  return new Response(JSON.stringify(standardized), {
     status: initialResponse.status,
-    headers: safeHeaders,
-    body: JSON.stringify(standardized)
-  };
+    statusText: initialResponse.statusText,
+    headers: safeHeaders
+  });
 }
 
 // helper: write one SSE error event based on upstream error response (used when retry hits non-retryable status)
+const SSE_ENCODER = new TextEncoder();
 async function writeSSEErrorFromUpstream(writer, upstreamResp) {
   const std = await standardizeInitialError(upstreamResp);
-  let text = std.body;
+  let text = await std.text();
   const ra = upstreamResp.headers.get("Retry-After");
   if (ra) {
     try {
@@ -136,14 +125,14 @@ async function writeSSEErrorFromUpstream(writer, upstreamResp) {
       text = JSON.stringify(obj);
     } catch (_) {}
   }
-  await writer.write(`event: error\ndata: ${text}\n\n`);
+  await writer.write(SSE_ENCODER.encode(`event: error\ndata: ${text}\n\n`));
 }
 
 async function* sseLineIterator(reader) {
+  const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let lineCount = 0;
   logDebug("Starting SSE line iteration");
-  
   while (true) {
     const { value, done } = await reader.read();
     if (done) {
@@ -151,7 +140,7 @@ async function* sseLineIterator(reader) {
       if (buffer.trim()) yield buffer;
       break;
     }
-    buffer += new TextDecoder("utf-8").decode(value);
+    buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || "";
     for (const line of lines) {
@@ -231,57 +220,19 @@ function buildRetryRequestBody(originalBody, accumulatedText) {
   return retryBody;
 }
 
-async function processStreamAndRetryInternally({ req, res, originalRequestBody, upstreamUrl, originalHeaders }) {
+async function processStreamAndRetryInternally({ initialReader, writer, originalRequestBody, upstreamUrl, originalHeaders }) {
   let accumulatedText = "";
   let consecutiveRetryCount = 0;
+  let currentReader = initialReader;
   let totalLinesProcessed = 0;
-  let currentStream = null;
   const sessionStartTime = Date.now();
   
   let isOutputtingFormalText = false; // Tracks if we have started sending real content.
   let swallowModeActive = false; // Is the worker actively swallowing thoughts post-retry?
 
-  // Set up SSE headers
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  
-  const writer = {
-    write: (text) => {
-      res.write(text);
-      return Promise.resolve();
-    },
-    close: () => {
-      res.end();
-      return Promise.resolve();
-    }
-  };
-
   logInfo(`Starting stream processing session. Max retries: ${CONFIG.max_consecutive_retries}`);
 
-  // Make initial request
-  const initialResponse = await fetch(upstreamUrl, {
-    method: "POST",
-    headers: originalHeaders,
-    body: JSON.stringify(originalRequestBody)
-  });
-
-  if (!initialResponse.ok) {
-    logError(`Initial request failed with status ${initialResponse.status}`);
-    const errorResponse = await standardizeInitialError(initialResponse);
-    res.status(errorResponse.status).set(errorResponse.headers).send(errorResponse.body);
-    return;
-  }
-
-  let currentReader = initialResponse.body.getReader();
-
-  const cleanup = (reader) => { 
-    if (reader) { 
-      logDebug("Cleaning up reader"); 
-      reader.cancel().catch(() => {}); 
-    } 
-  };
+  const cleanup = (reader) => { if (reader) { logDebug("Cleaning up reader"); reader.cancel().catch(() => {}); } };
 
   while (true) {
     let interruptionReason = null; // "DROP", "BLOCK", "FINISH_DURING_THOUGHT", "FINISH_ABNORMAL", "FINISH_INCOMPLETE", "FETCH_ERROR"
@@ -331,9 +282,8 @@ async function processStreamAndRetryInternally({ req, res, originalRequestBody, 
         } else if (finishReason === "STOP") {
           const tempAccumulatedText = accumulatedText + textChunk;
           const trimmedText = tempAccumulatedText.trim();
-          const lastChar = trimmedText.slice(-1);
-          if (!(trimmedText.length === 0 || trimmedText.endsWith('[done]'))) {
-            logError(`Finish reason 'STOP' treated as incomplete because text ends with '${lastChar}'. Triggering retry.`);
+          if (!(trimmedText.length === 0 || trimmedText.endsWith('[done]'))){
+            logError(`Finish reason 'STOP' treated as incomplete because text does not end with '[done]'. Triggering retry.`);
             interruptionReason = "FINISH_INCOMPLETE";
             needsRetry = true;
           }
@@ -348,7 +298,7 @@ async function processStreamAndRetryInternally({ req, res, originalRequestBody, 
         }
         
         // --- Line is Good: Forward and Update State ---
-        await writer.write(line + "\n\n");
+        await writer.write(new TextEncoder().encode(line + "\n\n"));
 
         if (textChunk && !isThought) {
           isOutputtingFormalText = true; // Mark that we've started sending real text.
@@ -413,7 +363,7 @@ async function processStreamAndRetryInternally({ req, res, originalRequestBody, 
           details: [{ "@type": "proxy.debug", accumulated_text_chars: accumulatedText.length }]
         }
       };
-      await writer.write(`event: error\ndata: ${JSON.stringify(payload)}\n\n`);
+      await writer.write(SSE_ENCODER.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`));
       return writer.close();
     }
 
@@ -422,7 +372,7 @@ async function processStreamAndRetryInternally({ req, res, originalRequestBody, 
 
     try {
       const retryBody = buildRetryRequestBody(originalRequestBody, accumulatedText);
-      const retryHeaders = originalHeaders;
+      const retryHeaders = buildUpstreamHeaders(originalHeaders);
 
       logDebug(`Making retry request to: ${upstreamUrl}`);
       logDebug(`Retry request body size: ${JSON.stringify(retryBody).length} bytes`);
@@ -461,115 +411,145 @@ async function processStreamAndRetryInternally({ req, res, originalRequestBody, 
   }
 }
 
-async function handleStreamingPost(req, res) {
-  const urlObj = new URL(req.url, `http://${req.headers.host}`);
+async function handleStreamingPost(request) {
+  const urlObj = new URL(request.url);
   const upstreamUrl = `${CONFIG.upstream_url_base}${urlObj.pathname}${urlObj.search}`;
 
   logInfo(`=== NEW STREAMING REQUEST ===`);
   logInfo(`Upstream URL: ${upstreamUrl}`);
-  logInfo(`Request method: ${req.method}`);
-  logInfo(`Content-Type: ${req.headers["content-type"]}`);
+  logInfo(`Request method: ${request.method}`);
+  logInfo(`Content-Type: ${request.headers.get("content-type")}`);
 
-  // Parse the request body
-  let body = req.body;
-  
   // system prompt inject
+  const body = await request.json();
   const newSystemPromptPart = {
-    text: "Your message must end with [done] to signify the end of your output."
-  };
-  
-  // Case 1: `systemInstruction` field is missing or null.
-  // Create the `systemInstruction` object with the new prompt part.
+          text: "Your message must end with [done] to signify the end of your output."
+      };
   if (!body.systemInstruction) {
     body.systemInstruction = { parts: [newSystemPromptPart] };
-  } 
-  // Case 2: `systemInstruction` exists, but its `parts` array is missing, null, or not an array.
-  // Overwrite `parts` with a new array containing the new prompt part.
-  else if (!Array.isArray(body.systemInstruction.parts)) {
+  } else if (!Array.isArray(body.systemInstruction.parts)) {
     body.systemInstruction.parts = [newSystemPromptPart];
-  } 
-  // Case 3: `systemInstruction` and its `parts` array both exist.
-  // Append the new prompt part to the end of the existing array.
-  else {
+  } else {
     body.systemInstruction.parts.push(newSystemPromptPart);
   }
+  request = new Request(request, { body: JSON.stringify(body) });
 
-  logDebug(`Parsed request body with ${body.contents?.length || 0} messages`);
+  let originalRequestBody;
+  try {
+    const requestText = await request.clone().text();
+    logDebug(`Request body size: ${requestText.length} bytes`);
+    originalRequestBody = JSON.parse(requestText);
+    logDebug(`Parsed request body with ${originalRequestBody.contents?.length || 0} messages`);
+  } catch (e) {
+    logError("Failed to parse request body:", e.message);
+    return jsonError(400, "Invalid JSON in request body", e.message);
+  }
 
-  // Start the streaming process
-  await processStreamAndRetryInternally({
-    req,
-    res,
-    originalRequestBody: body,
+  logInfo("=== MAKING INITIAL REQUEST ===");
+  const initialHeaders = buildUpstreamHeaders(request.headers);
+  const initialRequest = new Request(upstreamUrl, {
+    method: request.method,
+    headers: initialHeaders,
+    body: JSON.stringify(originalRequestBody),
+    duplex: "half"
+  });
+
+  const t0 = Date.now();
+  const initialResponse = await fetch(initialRequest);
+  const dt = Date.now() - t0;
+
+  logInfo(`Initial request completed in ${dt}ms`);
+  logInfo(`Initial response status: ${initialResponse.status} ${initialResponse.statusText}`);
+
+  if (!initialResponse.ok) {
+    logError(`=== INITIAL REQUEST FAILED ===`);
+    return await standardizeInitialError(initialResponse);
+  }
+
+  logInfo("=== INITIAL REQUEST SUCCESSFUL - STARTING STREAM PROCESSING ===");
+  const initialReader = initialResponse.body?.getReader();
+  if (!initialReader) {
+    logError("Initial response body is missing despite 200 status");
+    return jsonError(502, "Bad Gateway", "Upstream returned a success code but the response body is missing.");
+  }
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+
+  processStreamAndRetryInternally({
+    initialReader,
+    writer,
+    originalRequestBody,
     upstreamUrl,
-    originalHeaders: buildUpstreamHeaders(req.headers)
+    originalHeaders: request.headers
   }).catch(e => {
     logError("=== UNHANDLED EXCEPTION IN STREAM PROCESSOR ===");
     logError("Exception:", e.message);
     logError("Stack:", e.stack);
-    try { res.end(); } catch (_) {}
+    try { writer.close(); } catch (_) {}
+  });
+
+  logInfo("Returning streaming response to client");
+  return new Response(readable, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "Access-Control-Allow-Origin": "*"
+    }
   });
 }
 
-async function handleNonStreaming(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+async function handleNonStreaming(request) {
+  const url = new URL(request.url);
   const upstreamUrl = `${CONFIG.upstream_url_base}${url.pathname}${url.search}`;
 
-  const upstreamHeaders = buildUpstreamHeaders(req.headers);
-  
-  let requestBody = null;
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    requestBody = req.body;
-  }
-
-  const response = await fetch(upstreamUrl, {
-    method: req.method,
-    headers: upstreamHeaders,
-    body: requestBody ? JSON.stringify(requestBody) : undefined
+  const upstreamReq = new Request(upstreamUrl, {
+    method: request.method,
+    headers: buildUpstreamHeaders(request.headers),
+    body: (request.method === "GET" || request.method === "HEAD") ? undefined : request.body
   });
 
-  if (!response.ok) {
-    const errorResponse = await standardizeInitialError(response);
-    return res.status(errorResponse.status).set(errorResponse.headers).send(errorResponse.body);
-  }
+  const resp = await fetch(upstreamReq);
+  if (!resp.ok) return await standardizeInitialError(resp);
 
-  const responseBody = await response.text();
-  const headers = Object.fromEntries(response.headers.entries());
-  headers["Access-Control-Allow-Origin"] = "*";
-
-  return res.status(response.status).set(headers).send(responseBody);
+  const headers = new Headers(resp.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
 }
 
-export default async function handler(req, res) {
+// VERCEL: 标准 Vercel Edge Function 入口点
+export default async function handler(request) {
   try {
-    logInfo(`=== VERCEL FUNCTION REQUEST ===`);
-    logInfo(`Method: ${req.method}`);
-    logInfo(`URL: ${req.url}`);
-    logInfo(`User-Agent: ${req.headers["user-agent"] || "unknown"}`);
-    logInfo(`Client IP: ${req.headers["x-forwarded-for"] || req.connection.remoteAddress || "unknown"}`);
+    logInfo(`=== VERCEL EDGE REQUEST ===`);
+    logInfo(`Method: ${request.method}`);
+    logInfo(`URL: ${request.url}`);
+    logInfo(`User-Agent: ${request.headers.get("user-agent") || "unknown"}`);
+    logInfo(`Client-IP: ${request.headers.get("x-real-ip") || request.headers.get("x-vercel-forwarded-for") || "unknown"}`);
 
-    if (req.method === "OPTIONS") {
+    if (request.method === "OPTIONS") {
       logDebug("Handling CORS preflight request");
-      const options = handleOPTIONS();
-      return res.status(options.status).set(options.headers).end();
+      return handleOPTIONS();
     }
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(request.url);
     const alt = url.searchParams.get("alt");
-    const isStream = /stream|sse/i.test(url.pathname) || alt === "sse";
+    
+    // **FIX:** Use a more specific check for streaming requests.
+    const isStream = url.pathname.endsWith(":streamGenerateContent") || alt === "sse";
     logInfo(`Detected streaming request: ${isStream}`);
 
-    if (req.method === "POST" && isStream) {
-      return await handleStreamingPost(req, res);
+    if (request.method === "POST" && isStream) {
+      return await handleStreamingPost(request);
     }
 
-    return await handleNonStreaming(req, res);
+    return await handleNonStreaming(request);
 
   } catch (e) {
     logError("=== TOP-LEVEL EXCEPTION ===");
     logError("Message:", e.message);
     logError("Stack:", e.stack);
-    const error = jsonError(500, "Internal Server Error", "The proxy function encountered a critical, unrecoverable error.");
-    return res.status(error.status).set(error.headers).send(error.body);
+    return jsonError(500, "Internal Server Error", "The proxy worker encountered a critical, unrecoverable error.");
   }
 }
