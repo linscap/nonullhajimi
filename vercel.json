@@ -2,7 +2,7 @@
   "version": 2,
   "routes": [
     {
-      "src": ""/v1beta/models/([a-zA-Z0-9.-]+)/(.+)",
+      "src": "/v1beta/models/([a-zA-Z0-9.-]+)/(.+)",
       "dest": "/api/proxy"
     }
   ],
