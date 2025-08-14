@@ -1,15 +1,8 @@
 {
-  "version": 2,
-  "routes": [
+  "rewrites": [
     {
-      "src": "/v1beta/models/([a-zA-Z0-9.-]+)/(.+)",
-      "dest": "/api/proxy"
+      "source": "/:path*",
+      "destination": "/api/proxy"
     }
-  ],
-  "functions": {
-    "api/proxy.js": {
-      "memory": 1024,
-      "maxDuration": 60
-    }
-  }
+  ]
 }
