@@ -1,19 +1,4 @@
 {
-  "name": "gemini-proxy",
-  "version": "1.0.0",
-  "description": "Vercel Function proxy for Gemini API with robust streaming retry",
-  "main": "api/proxy.js",
-  "scripts": {
-    "dev": "vercel dev"
-  },
-  "dependencies": {
-    "node-fetch": "^3.3.2"
-  },
-  "devDependencies": {
-    "vercel": "^33.0.0"
-  },
-  "engines": {
-    "node": ">=18.x"
-  },
-  "license": "MIT"
+  "name": "vercel-gemini-proxy-pro",
+  "version": "4.1.0"
 }
