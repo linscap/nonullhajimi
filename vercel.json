@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "routes": [
+    {
+      "src": "/v1beta/models/gemini-(pro|1\\.5-pro|1\\.5-flash|ultra)/(.+)",
+      "dest": "/api/proxy"
+    }
+  ],
+  "functions": {
+    "api/proxy.js": {
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  }
+}
