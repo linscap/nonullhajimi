@@ -2,14 +2,37 @@
   "version": 2,
   "builds": [
     {
-      "src": "./api/index.js",
+      "src": "api/**/*.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "public/**/*",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     {
+      "src": "/v1beta/(.*)",
+      "dest": "/api/proxy.js"
+    },
+    {
+      "src": "/v1/(.*)",
+      "dest": "/api/proxy.js"
+    },
+    {
+      "src": "/v1gamma1/(.*)",
+      "dest": "/api/proxy.js"
+    },
+    {
       "src": "/(.*)",
-      "dest": "/api/index.js"
+      "dest": "/public/$1"
     }
-  ]
+  ],
+  "env": {
+    "UPSTREAM_URL_BASE": "https://generativelanguage.googleapis.com",
+    "MAX_CONSECUTIVE_RETRIES": "3",
+    "DEBUG_MODE": "true",
+    "RETRY_DELAY_MS": "750",
+    "LOG_TRUNCATION_LIMIT": "8000"
+  }
 }
