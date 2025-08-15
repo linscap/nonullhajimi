@@ -1,12 +1,11 @@
+// All of the gemini.js code is inlined here to create a single, self-contained Vercel function.
+
 /**
- * @fileoverview Vercel Serverless Function for Gemini API proxy.
- * Combines the Vercel handler with the core Gemini proxy logic.
- * Features robust streaming retry to handle premature stream termination and empty replies.
- * @version 4.1.8
+ * @fileoverview Vercel Serverless Function proxy for Gemini API.
+ * Based on Cloudflare Worker proxy with robust streaming retry.
+ * @version 3.5.0-vercel
  * @license MIT
  */
-
-// --- Start of Core Gemini Proxy Logic ---
 
 const CONFIG = {
   upstream_url_base: "https://generativelanguage.googleapis.com",
@@ -125,7 +124,9 @@ async function writeSSEErrorFromUpstream(writer, upstreamResp) {
     } catch (_) {}
   }
   await writer.write(SSE_ENCODER.encode(`event: error
-data: ${text}\n\n`));
+data: ${text}
+
+`));
 }
 
 async function* sseLineIterator(reader) {
@@ -288,7 +289,9 @@ async function processStreamAndRetryInternally({ initialReader, writer, original
         error: { code: 504, status: "DEADLINE_EXCEEDED", message: `Proxy retry limit (${CONFIG.max_consecutive_retries}) exceeded. Last interruption: ${interruptionReason}.`}
       };
       await writer.write(SSE_ENCODER.encode(`event: error
-data: ${JSON.stringify(payload)}\n\n`));
+data: ${JSON.stringify(payload)}
+
+`));
       return writer.close();
     }
 
@@ -297,19 +300,13 @@ data: ${JSON.stringify(payload)}\n\n`));
 
     try {
       if (CONFIG.retry_delay_ms > 0) {
-        logDebug(`Waiting ${CONFIG.retry_delay_ms}ms before retrying...`);
         await new Promise(res => setTimeout(res, CONFIG.retry_delay_ms));
       }
       
       const retryBody = buildRetryRequestBody(originalRequestBody, accumulatedText);
       const retryHeaders = buildUpstreamHeaders(originalHeaders);
 
-      logDebug(`Making retry request to: ${upstreamUrl}`);
-      const retryResponse = await fetch(upstreamUrl, { 
-          method: "POST", 
-          headers: retryHeaders, 
-          body: JSON.stringify(retryBody) 
-      });
+      const retryResponse = await fetch(upstreamUrl, { method: "POST", headers: retryHeaders, body: JSON.stringify(retryBody) });
       logInfo(`Retry request completed. Status: ${retryResponse.status} ${retryResponse.statusText}`);
 
       if (NON_RETRYABLE_STATUSES.has(retryResponse.status)) {
@@ -331,11 +328,9 @@ data: ${JSON.stringify(payload)}\n\n`));
 }
 
 async function handleStreamingPost(request, env) {
-    let requestUrlStr = request.url.toString();
-    let urlObj = new URL(requestUrlStr);
-    
+    const urlObj = new URL(request.url);
     const upstreamUrl = `${CONFIG.upstream_url_base}${urlObj.pathname}${urlObj.search}`;
-    logInfo(`=== NEW STREAMING REQUEST: ${request.method} ${requestUrlStr} ===`);
+    logInfo(`=== NEW STREAMING REQUEST: ${request.method} ${request.url} ===`);
   
     let originalRequestBody;
     try {
@@ -347,17 +342,17 @@ async function handleStreamingPost(request, env) {
       return jsonError(400, "Invalid JSON in request body", e.message);
     }
   
-    const t0 = Date.now();
-    // [FIXED] Call fetch directly with an options object, not a Request object.
-    const initialResponse = await fetch(upstreamUrl, {
+    const initialRequest = new Request(upstreamUrl, {
       method: request.method,
       headers: buildUpstreamHeaders(request.headers),
       body: JSON.stringify(originalRequestBody),
+      duplex: "half"
     });
-    logInfo(`Initial upstream response received in ${Date.now() - t0}ms. Status: ${initialResponse.status}`);
+  
+    const initialResponse = await fetch(initialRequest);
+    logInfo(`Initial upstream response received. Status: ${initialResponse.status}`);
   
     if (!initialResponse.ok) {
-      logError(`Initial request failed with status ${initialResponse.status}.`);
       return await standardizeInitialError(initialResponse);
     }
   
@@ -366,7 +361,7 @@ async function handleStreamingPost(request, env) {
       return jsonError(502, "Bad Gateway", "Upstream returned a success code but the response body is missing.");
     }
   
-    const {readable, writable} = new TransformStream();
+    const { readable, writable } = new TransformStream();
     
     processStreamAndRetryInternally({
       initialReader,
@@ -391,22 +386,18 @@ async function handleStreamingPost(request, env) {
 }
   
 async function handleNonStreaming(request, env) {
-    let requestUrlStr = request.url.toString();
-    let url = new URL(requestUrlStr);
-    
+    const url = new URL(request.url);
     const upstreamUrl = `${CONFIG.upstream_url_base}${url.pathname}${url.search}`;
-    logInfo(`=== NEW NON-STREAMING REQUEST: ${request.method} ${requestUrlStr} ===`);
+    logInfo(`=== NEW NON-STREAMING REQUEST: ${request.method} ${request.url} ===`);
   
-    const requestBody = await request.text();
-    logInfo(`Request body (raw, ${requestBody.length} bytes): ${truncate(requestBody)}`);
-
-    // [FIXED] Call fetch directly with an options object, not a Request object.
-    const resp = await fetch(upstreamUrl, {
+    const upstreamReq = new Request(upstreamUrl, {
       method: request.method,
       headers: buildUpstreamHeaders(request.headers),
-      body: requestBody,
+      body: request.body,
+      duplex: 'half',
     });
   
+    const resp = await fetch(upstreamReq);
     if (!resp.ok) return await standardizeInitialError(resp);
   
     const headers = new Headers(resp.headers);
@@ -414,64 +405,86 @@ async function handleNonStreaming(request, env) {
     return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
 }
   
-async function fetchProxy(request, env) {
-    try {
-      Object.assign(CONFIG, env);
-      if (request.method === "OPTIONS") return handleOPTIONS();
-      
-      const url = new URL(request.url);
-      const isStream = url.searchParams.get("alt") === "sse";
+const geminiModule = {
+    async fetch(request, env) {
+      try {
+        Object.assign(CONFIG, env);
+        if (request.method === "OPTIONS") return handleOPTIONS();
+        
+        const url = new URL(request.url);
+        const isStream = url.searchParams.get("alt") === "sse";
 
-      if (request.method === "POST" && isStream) {
-        return await handleStreamingPost(request, env);
+        if (request.method === "POST" && isStream) {
+          return await handleStreamingPost(request, env);
+        }
+        return await handleNonStreaming(request, env);
+      } catch (e) {
+        logError("!!! TOP-LEVEL WORKER EXCEPTION !!!", e.message, e.stack);
+        return jsonError(500, "Internal Server Error", "The proxy worker encountered a critical error.");
       }
-      return await handleNonStreaming(request, env);
-    } catch (e) {
-      logError("!!! TOP-LEVEL WORKER EXCEPTION !!!", e.message, e.stack);
-      return jsonError(500, "Internal Server Error", "The proxy worker encountered a critical error.");
     }
-}
+};
 
-// --- End of Core Gemini Proxy Logic ---
+// Vercel Serverless Function Handler
+export default async function handler(req, res) {
+  // 1. Set CORS headers for OPTIONS preflight requests and all responses.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Goog-Api-Key');
 
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
 
-// --- Vercel Serverless Handler ---
+  try {
+    // 2. Collect environment variables from Vercel's `process.env`.
+    const workerEnv = {
+      UPSTREAM_URL_BASE: process.env.UPSTREAM_URL_BASE || 'https://generativelanguage.googleapis.com',
+      MAX_CONSECUTIVE_RETRIES: parseInt(process.env.MAX_CONSECUTIVE_RETRIES) || 3,
+      LOG_TRUNCATION_LIMIT: parseInt(process.env.LOG_TRUNCATION_LIMIT) || 8000,
+      DEBUG_MODE: process.env.DEBUG_MODE === 'true'
+    };
 
-async function getRequestBody(request) {
-  // Vercel's request object in the Node.js runtime has a body that is a Readable stream.
-  if (request.body) {
-    const reader = request.body.getReader();
-    const decoder = new TextDecoder();
-    let body = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return body;
-      body += decoder.decode(value);
+    // 3. Reconstruct the full URL for the request.
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['x-vercel-deployment-url'] || req.headers.host;
+    const fullUrl = `${protocol}://${host}${req.url}`;
+
+    // 4. Create a `Request`-like object that the geminiModule expects.
+    const workerRequest = new Request(fullUrl, {
+        method: req.method,
+        headers: req.headers,
+        body: req.method !== 'GET' && req.method !== 'HEAD' ? req : undefined,
+    });
+
+    // 5. Call the core logic.
+    const response = await geminiModule.fetch(workerRequest, workerEnv);
+
+    // 6. Pipe the Response object to the Vercel `res` object.
+    res.status(response.status);
+    for (const [key, value] of response.headers.entries()) {
+        res.setHeader(key, value);
+    }
+
+    if (response.body) {
+        const reader = response.body.getReader();
+        while (true) {
+            const {done, value} = await reader.read();
+            if (done) {
+                break;
+            }
+            res.write(value);
+        }
+    }
+    res.end();
+
+  } catch (error) {
+    console.error('Critical error in Vercel handler:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal Server Error' });
+    } else {
+      res.end();
     }
   }
-  return null;
-}
-
-export default async function handler(request) {
-  // Vercel's incoming 'request' is not a standard Request object. We must adapt it.
-  const requestBodyString = await getRequestBody(request);
-  const url = new URL(request.url, `https://${request.headers.host || 'localhost'}`);
-  const headers = new Headers(request.headers);
-
-  // We construct a standard Request object that our core logic expects.
-  const standardRequest = new Request(url, {
-    method: request.method,
-    headers: headers,
-    body: requestBodyString,
-  });
-
-  const workerEnv = {
-    UPSTREAM_URL_BASE: process.env.UPSTREAM_URL_BASE || 'https://generativelanguage.googleapis.com',
-    MAX_CONSECUTIVE_RETRIES: parseInt(process.env.MAX_CONSECUTIVE_RETRIES) || 3,
-    DEBUG_MODE: process.env.DEBUG_MODE === 'true',
-    RETRY_DELAY_MS: parseInt(process.env.RETRY_DELAY_MS) || 750,
-    LOG_TRUNCATION_LIMIT: parseInt(process.env.LOG_TRUNCATION_LIMIT) || 8000,
-  };
-
-  return fetchProxy(standardRequest, workerEnv);
 }
