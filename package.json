@@ -1,11 +1,16 @@
 {
-  "name": "gemini-ant-vercel",
+  "name": "gemini-antiblock-vercel",
   "version": "1.0.0",
-  "description": "Vercel deployment for Gemini API proxy",
-  "main": "api/index.js",
+  "description": "Gemini API proxy with retry logic for Vercel",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "vercel": "^31.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
