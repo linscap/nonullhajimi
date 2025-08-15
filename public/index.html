@@ -1,57 +1,218 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini API Proxy</title>
+    <title>Gemini API 代理测试</title>
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             line-height: 1.6;
             color: #333;
             max-width: 800px;
-            margin: 40px auto;
-            padding: 0 20px;
-            background-color: #f9f9f9;
-        }
-        .container {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            margin: 0 auto;
+            padding: 20px;
         }
         h1 {
             color: #1a73e8;
-            border-bottom: 2px solid #e0e0e0;
+            border-bottom: 2px solid #1a73e8;
             padding-bottom: 10px;
         }
-        p {
-            margin-bottom: 15px;
+        .container {
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        code {
-            background-color: #eee;
-            padding: 3px 6px;
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
             border-radius: 4px;
-            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            margin-bottom: 15px;
+            font-size: 14px;
         }
-        .footer {
-            margin-top: 30px;
-            text-align: center;
-            font-size: 0.9em;
-            color: #777;
+        button {
+            background-color: #1a73e8;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #155ab9;
+        }
+        #response {
+            white-space: pre-wrap;
+            background-color: #f1f3f4;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+        }
+        .streaming {
+            border: 1px solid #76c7ff !important;
+            background-color: #e8f4fd !important;
         }
     </style>
 </head>
 <body>
+    <h1>Gemini API 代理测试页面</h1>
+    
     <div class="container">
-        <h1>🚀 Gemini API Proxy is Running</h1>
-        <p>This is a proxy server for the Google Gemini API, designed to enhance stability and provide robust retry mechanisms.</p>
-        <p>This endpoint itself is not a user-facing application. It's a middleware that you should use in your own applications.</p>
-        <p>To use it, simply replace the official Gemini API base URL (<code>https://generativelanguage.googleapis.com</code>) with the URL of this deployment in your client code.</p>
-        <p>For example, a request to <code>/v1beta/models/gemini-pro:generateContent</code> will be proxied to the official API.</p>
+        <label for="apiKey">API 密钥:</label>
+        <input type="text" id="apiKey" placeholder="输入你的 Google Gemini API 密钥">
+        
+        <label for="prompt">提示词:</label>
+        <textarea id="prompt" rows="4" placeholder="输入你想问的问题...">你好，请介绍一下自己。</textarea>
+        
+        <div>
+            <button id="submitNonStreaming">发送请求 (非流式)</button>
+            <button id="submitStreaming">发送请求 (流式)</button>
+        </div>
     </div>
-    <div class="footer">
-        <p>Powered by Vercel</p>
+    
+    <div class="container">
+        <label for="response">响应:</label>
+        <div id="response"></div>
     </div>
+
+    <script>
+        document.getElementById('submitNonStreaming').addEventListener('click', async () => {
+            await sendRequest(false);
+        });
+        
+        document.getElementById('submitStreaming').addEventListener('click', async () => {
+            await sendRequest(true);
+        });
+        
+        async function sendRequest(streaming) {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const prompt = document.getElementById('prompt').value.trim();
+            const responseElement = document.getElementById('response');
+            
+            if (!apiKey) {
+                alert('请输入 API 密钥');
+                return;
+            }
+            
+            if (!prompt) {
+                alert('请输入提示词');
+                return;
+            }
+            
+            responseElement.textContent = streaming ? '等待流式响应...' : '发送请求中...';
+            responseElement.className = streaming ? 'streaming' : '';
+            
+            const requestBody = {
+                contents: [
+                    {
+                        parts: [
+                            {
+                                text: prompt
+                            }
+                        ]
+                    }
+                ]
+            };
+            
+            try {
+                if (streaming) {
+                    // 流式请求
+                    const response = await fetch(`/v1beta/models/gemini-pro:generateContent?alt=sse`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Goog-Api-Key': apiKey
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        responseElement.textContent = `错误: ${response.status} ${response.statusText}\n\n${errorText}`;
+                        return;
+                    }
+                    
+                    responseElement.textContent = '';
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const text = decoder.decode(value);
+                        const lines = text.split('\n\n');
+                        
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    const candidate = data.candidates?.[0];
+                                    if (candidate?.content?.parts) {
+                                        for (const part of candidate.content.parts) {
+                                            if (part.text) {
+                                                responseElement.textContent += part.text;
+                                            }
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error('解析 SSE 数据失败:', e);
+                                }
+                            } else if (line.startsWith('event: error')) {
+                                responseElement.textContent += `\n\n[流式错误] ${line}`;
+                            }
+                        }
+                    }
+                } else {
+                    // 非流式请求
+                    const response = await fetch(`/v1beta/models/gemini-pro:generateContent`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Goog-Api-Key': apiKey
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        responseElement.textContent = `错误: ${JSON.stringify(data, null, 2)}`;
+                        return;
+                    }
+                    
+                    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '无内容';
+                    responseElement.textContent = text;
+                }
+            } catch (error) {
+                responseElement.textContent = `请求错误: ${error.message}`;
+            }
+        }
+
+        // 从 localStorage 恢复 API 密钥
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedApiKey = localStorage.getItem('geminiApiKey');
+            if (savedApiKey) {
+                document.getElementById('apiKey').value = savedApiKey;
+            }
+        });
+
+        // 保存 API 密钥到 localStorage
+        document.getElementById('apiKey').addEventListener('change', (e) => {
+            localStorage.setItem('geminiApiKey', e.target.value);
+        });
+    </script>
 </body>
 </html>
