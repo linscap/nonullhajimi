@@ -2,7 +2,7 @@
  * @fileoverview Vercel Serverless Function for Gemini API proxy.
  * Combines the Vercel handler with the core Gemini proxy logic.
  * Features robust streaming retry to handle premature stream termination and empty replies.
- * @version 4.0.0
+ * @version 4.1.8
  * @license MIT
  */
 
@@ -124,7 +124,8 @@ async function writeSSEErrorFromUpstream(writer, upstreamResp) {
       text = JSON.stringify(obj);
     } catch (_) {}
   }
-  await writer.write(SSE_ENCODER.encode(`event: error\ndata: ${text}\n\n`));
+  await writer.write(SSE_ENCODER.encode(`event: error
+data: ${text}\n\n`));
 }
 
 async function* sseLineIterator(reader) {
@@ -286,7 +287,8 @@ async function processStreamAndRetryInternally({ initialReader, writer, original
       const payload = {
         error: { code: 504, status: "DEADLINE_EXCEEDED", message: `Proxy retry limit (${CONFIG.max_consecutive_retries}) exceeded. Last interruption: ${interruptionReason}.`}
       };
-      await writer.write(SSE_ENCODER.encode(`event: error\ndata: ${JSON.stringify(payload)}\n\n`));
+      await writer.write(SSE_ENCODER.encode(`event: error
+data: ${JSON.stringify(payload)}\n\n`));
       return writer.close();
     }
 
@@ -303,7 +305,11 @@ async function processStreamAndRetryInternally({ initialReader, writer, original
       const retryHeaders = buildUpstreamHeaders(originalHeaders);
 
       logDebug(`Making retry request to: ${upstreamUrl}`);
-      const retryResponse = await fetch(upstreamUrl, { method: "POST", headers: retryHeaders, body: JSON.stringify(retryBody) });
+      const retryResponse = await fetch(upstreamUrl, { 
+          method: "POST", 
+          headers: retryHeaders, 
+          body: JSON.stringify(retryBody) 
+      });
       logInfo(`Retry request completed. Status: ${retryResponse.status} ${retryResponse.statusText}`);
 
       if (NON_RETRYABLE_STATUSES.has(retryResponse.status)) {
@@ -341,15 +347,13 @@ async function handleStreamingPost(request, env) {
       return jsonError(400, "Invalid JSON in request body", e.message);
     }
   
-    const initialRequest = new Request(upstreamUrl, {
+    const t0 = Date.now();
+    // [FIXED] Call fetch directly with an options object, not a Request object.
+    const initialResponse = await fetch(upstreamUrl, {
       method: request.method,
       headers: buildUpstreamHeaders(request.headers),
       body: JSON.stringify(originalRequestBody),
-      duplex: "half"
     });
-  
-    const t0 = Date.now();
-    const initialResponse = await fetch(initialRequest);
     logInfo(`Initial upstream response received in ${Date.now() - t0}ms. Status: ${initialResponse.status}`);
   
     if (!initialResponse.ok) {
@@ -362,7 +366,7 @@ async function handleStreamingPost(request, env) {
       return jsonError(502, "Bad Gateway", "Upstream returned a success code but the response body is missing.");
     }
   
-    const { readable, writable } = new TransformStream();
+    const {readable, writable} = new TransformStream();
     
     processStreamAndRetryInternally({
       initialReader,
@@ -396,14 +400,13 @@ async function handleNonStreaming(request, env) {
     const requestBody = await request.text();
     logInfo(`Request body (raw, ${requestBody.length} bytes): ${truncate(requestBody)}`);
 
-    const upstreamReq = new Request(upstreamUrl, {
+    // [FIXED] Call fetch directly with an options object, not a Request object.
+    const resp = await fetch(upstreamUrl, {
       method: request.method,
       headers: buildUpstreamHeaders(request.headers),
       body: requestBody,
-      duplex: 'half',
     });
   
-    const resp = await fetch(upstreamReq);
     if (!resp.ok) return await standardizeInitialError(resp);
   
     const headers = new Headers(resp.headers);
@@ -435,6 +438,7 @@ async function fetchProxy(request, env) {
 // --- Vercel Serverless Handler ---
 
 async function getRequestBody(request) {
+  // Vercel's request object in the Node.js runtime has a body that is a Readable stream.
   if (request.body) {
     const reader = request.body.getReader();
     const decoder = new TextDecoder();
@@ -449,10 +453,12 @@ async function getRequestBody(request) {
 }
 
 export default async function handler(request) {
+  // Vercel's incoming 'request' is not a standard Request object. We must adapt it.
   const requestBodyString = await getRequestBody(request);
   const url = new URL(request.url, `https://${request.headers.host || 'localhost'}`);
   const headers = new Headers(request.headers);
 
+  // We construct a standard Request object that our core logic expects.
   const standardRequest = new Request(url, {
     method: request.method,
     headers: headers,
