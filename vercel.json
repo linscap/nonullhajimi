@@ -1,8 +1,14 @@
 {
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 10,
+      "memory": 1024
+    }
+  },
   "rewrites": [
     {
-      "source": "/:path*",
-      "destination": "/api/proxy"
+      "source": "/v1beta/(.*)",
+      "destination": "/api/index.js"
     }
   ]
 }
