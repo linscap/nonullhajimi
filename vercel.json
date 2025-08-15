@@ -1,8 +1,16 @@
 {
+  "functions": {
+    "api/index.js": {
+      "runtime": "nodejs18.x",
+      "streaming": true,
+      "maxDuration": 10,
+      "memory": 1024
+    }
+  },
   "rewrites": [
     {
-      "source": "/(.*)",
-      "destination": "/api/proxy"
+      "source": "/v1beta/(.*)",
+      "destination": "/api/index.js"
     }
   ]
 }
