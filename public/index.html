@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini API Proxy</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        h1 {
+            color: #1a73e8;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 10px;
+        }
+        p {
+            margin-bottom: 15px;
+        }
+        code {
+            background-color: #eee;
+            padding: 3px 6px;
+            border-radius: 4px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        }
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 0.9em;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Gemini API Proxy is Running</h1>
+        <p>This is a proxy server for the Google Gemini API, designed to enhance stability and provide robust retry mechanisms.</p>
+        <p>This endpoint itself is not a user-facing application. It's a middleware that you should use in your own applications.</p>
+        <p>To use it, simply replace the official Gemini API base URL (<code>https://generativelanguage.googleapis.com</code>) with the URL of this deployment in your client code.</p>
+        <p>For example, a request to <code>/v1beta/models/gemini-pro:generateContent</code> will be proxied to the official API.</p>
+    </div>
+    <div class="footer">
+        <p>Powered by Vercel</p>
+    </div>
+</body>
+</html>
