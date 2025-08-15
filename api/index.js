@@ -1,8 +1,23 @@
 import geminiModule from '../gemini.js';
 
 export default async function handler(request) {
-  // Vercel's request object is already a Web Standard Request object,
-  // which is what gemini.js's fetch handler expects.
+  // The comment below was incorrect. Vercel's incoming request object in the Node.js
+  // runtime is NOT a standard Web Request object. We must construct one manually
+  // for gemini.js to work correctly.
+
+  // 1. Construct a full URL. The host doesn't matter as much as the path.
+  const url = new URL(request.url, `https://${request.headers.host || 'localhost'}`);
+
+  // 2. Create a standard Headers object from Vercel's plain object.
+  const headers = new Headers(request.headers);
+
+  // 3. Create the standard Request object that gemini.js expects.
+  const standardRequest = new Request(url, {
+    method: request.method,
+    headers: headers,
+    body: request.body,
+    duplex: 'half' // Required for streams in Node.js
+  });
 
   // Create the environment object from Vercel's environment variables.
   const workerEnv = {
@@ -13,8 +28,6 @@ export default async function handler(request) {
     LOG_TRUNCATION_LIMIT: parseInt(process.env.LOG_TRUNCATION_LIMIT) || 8000,
   };
 
-  // Call the fetch handler from gemini.js and return the response.
-  // Vercel's runtime can handle the Web Standard Response object directly,
-  // including streaming responses.
-  return geminiModule.fetch(request, workerEnv);
+  // Call the fetch handler from gemini.js with the compliant request object.
+  return geminiModule.fetch(standardRequest, workerEnv);
 }
