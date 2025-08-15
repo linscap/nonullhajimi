@@ -1,4 +1,12 @@
 {
-  "name": "vercel-gemini-proxy-pro",
-  "version": "4.1.0"
+  "name": "gemini-antiblock",
+  "version": "1.0.0",
+  "description": "Gemini API proxy with retry logic",
+  "main": "gemini.js",
+  "type": "module",
+  "scripts": {},
+  "dependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  }
 }
